@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
+      - name: Compile sources
+        run: |
+          python -m py_compile \
+            watermark_harness/core.py \
+            watermark_harness/cli.py \
+            watermark_harness/__init__.py \
+            watermark_harness/__main__.py \
+            hermes_plugin/__init__.py \
+            hermes_plugin/watermark_file/__init__.py \
+            hermes_plugin/watermark_file/watermark.py \
+            tests/test_watermark_harness.py \
+            scripts/smoke_local_ollama.py
+      - name: Run tests
+        run: python -m pytest -q
