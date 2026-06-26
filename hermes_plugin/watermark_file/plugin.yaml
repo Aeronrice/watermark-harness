@@ -1,5 +1,5 @@
 name: watermark-file
-version: 1.0.0
+version: 1.0.1
 description: "Agent tool for applying locked-standard repeated diagonal watermarks to local PDF and image files without overwriting originals."
 author: local
 kind: standalone

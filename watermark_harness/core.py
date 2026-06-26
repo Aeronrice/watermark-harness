@@ -536,11 +536,11 @@ def _watermark_pdf(input_path: Path, output_path: Path, *, text: str, angle: flo
     if getattr(reader, "is_encrypted", False):
         raise RuntimeError("Encrypted PDFs are not supported without a password.")
 
-    writer = PdfWriter()
+    writer = PdfWriter(clone_from=str(input_path))
     font_choice = _register_pdf_font(font_family, warnings)
 
     page_count = 0
-    for page in reader.pages:
+    for page in writer.pages:
         width = float(page.mediabox.width)
         height = float(page.mediabox.height)
         packet = BytesIO()
@@ -560,7 +560,6 @@ def _watermark_pdf(input_path: Path, output_path: Path, *, text: str, angle: flo
         packet.seek(0)
         overlay_reader = PdfReader(packet)
         page.merge_page(overlay_reader.pages[0])
-        writer.add_page(page)
         page_count += 1
 
     if reader.metadata:

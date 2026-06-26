@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import pytest
@@ -110,15 +111,17 @@ def test_pdf_watermark_preserves_page_count(tmp_path: Path) -> None:
     c.save()
     original_bytes = input_path.read_bytes()
 
-    result = _json_result(
-        watermark_file(
-            input_path=str(input_path),
-            watermark_text="机密",
-            spacing=90,
-            opacity=0.3,
-            allow_style_overrides=True,
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = _json_result(
+            watermark_file(
+                input_path=str(input_path),
+                watermark_text="机密",
+                spacing=90,
+                opacity=0.3,
+                allow_style_overrides=True,
+            )
         )
-    )
 
     assert result["success"] is True
     assert result["format"] == "pdf"
@@ -128,6 +131,11 @@ def test_pdf_watermark_preserves_page_count(tmp_path: Path) -> None:
     assert input_path.read_bytes() == original_bytes
     assert len(pypdf.PdfReader(str(output_path)).pages) == 2
     assert output_path.stat().st_size > input_path.stat().st_size
+    assert not [
+        warning
+        for warning in caught
+        if "replace_contents()" in str(warning.message)
+    ]
 
 
 def test_tool_rejects_non_standard_style_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

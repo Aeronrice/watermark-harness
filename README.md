@@ -41,6 +41,10 @@ Implementation invariants:
 
 If Ollama is unavailable or returns bad JSON, rendering still proceeds and records preflight status as skipped/failed. If the watermark text asks for style changes, the preflight returns a warning while the renderer keeps the locked standard.
 
+## PDF compatibility
+
+PDF watermarking mutates writer-owned pages via `PdfWriter(clone_from=...)` before `merge_page(...)`. Keep this pattern when syncing with Hermes Agent; mutating `PdfReader` pages directly triggers a pypdf 7 removal warning around `PageObject.replace_contents()`.
+
 ## Install
 
 ```bash
