@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watermark-harness"
+version = "0.1.0"
+description = "Locked-standard PDF/image watermark harness with local-only Ollama preflight."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pillow>=10,<13",
+]
+
+[project.optional-dependencies]
+pdf = [
+  "pypdf>=6.14.2,<7",
+  "reportlab>=5.0.0,<6",
+]
+dev = [
+  "pytest>=8,<10",
+  "pypdf>=6.14.2,<7",
+  "reportlab>=5.0.0,<6",
+]
+
+[project.scripts]
+watermark-harness = "watermark_harness.cli:main"
+
+[tool.setuptools]
+packages = ["watermark_harness", "hermes_plugin", "hermes_plugin.watermark_file"]
+
+[tool.setuptools.package-data]
+"hermes_plugin.watermark_file" = ["plugin.yaml"]
