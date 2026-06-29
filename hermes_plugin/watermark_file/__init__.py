@@ -10,8 +10,9 @@ from watermark_harness.core import watermark_file_tool
 WATERMARK_FILE_SCHEMA: Dict[str, Any] = {
     "name": "watermark_file",
     "description": (
-        "Apply a repeated diagonal watermark to a local PDF, PNG, JPG, or JPEG "
-        "file. Creates a new output file and never overwrites the input. "
+        "Apply a repeated diagonal watermark to a local PDF, PNG, JPG, JPEG, "
+        "Word, Excel, or PPT file. Office inputs are converted to watermarked "
+        "PDF output. Creates a new output file and never overwrites the input. "
         "The watermark style is locked to the standard: 45 degree angle, "
         "13 pt Microsoft YaHei preferred font, 0.2 opacity, 200 pt/px spacing. "
         "At call time, provide only the file, watermark text, and optional output path."
@@ -21,7 +22,7 @@ WATERMARK_FILE_SCHEMA: Dict[str, Any] = {
         "properties": {
             "input_path": {
                 "type": "string",
-                "description": "Path to the local PDF/PNG/JPG/JPEG file to watermark.",
+                "description": "Path to the local PDF/PNG/JPG/JPEG/Word/Excel/PPT file to watermark.",
             },
             "watermark_text": {
                 "type": "string",
@@ -45,6 +46,6 @@ def register(ctx) -> None:
         toolset="watermark",
         schema=WATERMARK_FILE_SCHEMA,
         handler=lambda args, **kwargs: watermark_file_tool(args, task_id=kwargs.get("task_id")),
-        description="Apply repeated diagonal watermarks to PDFs and images",
+        description="Apply repeated diagonal watermarks to PDFs, images, Word, Excel, and PPT files",
         emoji="🔖",
     )

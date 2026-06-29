@@ -1,6 +1,7 @@
 # Watermark Harness
 
-Standalone harness for applying a locked-standard, repeated diagonal watermark to local PDF and image files.
+Standalone harness for applying a locked-standard, repeated diagonal watermark
+to local PDF, image, Word, Excel, and PPT files.
 
 This repository packages the watermark functionality extracted from the local Hermes Agent `watermark_file` plugin, plus a Hermes adapter that can be copied back into a Hermes plugin directory.
 
@@ -21,6 +22,17 @@ The visual style is intentionally locked in code:
 - opacity: `0.2`
 
 Style parameters are not exposed in the tool schema. If a caller tries to pass style arguments to `watermark_file_tool`, the call is rejected with `watermark_style_locked`.
+
+Supported inputs are fixed in code:
+
+- PDF
+- PNG/JPG/JPEG
+- Word: `.doc`, `.docx`
+- Excel: `.xls`, `.xlsx`
+- PPT: `.ppt`, `.pptx`
+
+Office inputs are converted locally to PDF first, then watermarked with the
+same PDF renderer. Office outputs are always `.pdf`.
 
 ## Local preflight
 
@@ -57,11 +69,15 @@ For PDF support in runtime environments, install the PDF extra:
 python3 -m pip install -e '.[pdf]'
 ```
 
+For Office input support, install LibreOffice so `soffice` or `libreoffice` is
+available on `PATH`.
+
 ## CLI
 
 ```bash
 python3 -m watermark_harness input.png '内部分享禁止外传CVC' --pretty
 python3 -m watermark_harness input.pdf '机密' --output-path output.pdf --local-preflight --pretty
+python3 -m watermark_harness input.docx '内部分享禁止外传CVC' --pretty
 ```
 
 ## Python API

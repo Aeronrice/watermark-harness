@@ -138,6 +138,64 @@ def test_pdf_watermark_preserves_page_count(tmp_path: Path) -> None:
     ]
 
 
+def test_office_watermark_converts_to_pdf_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    input_path = tmp_path / "deck.pptx"
+    input_path.write_bytes(b"not a real pptx; conversion is patched")
+
+    def _fake_convert_office_to_pdf(source: Path, output_dir: Path) -> Path:
+        assert source == input_path
+        converted = output_dir / "deck.pdf"
+        converted.write_bytes(b"%PDF-1.4\n")
+        return converted
+
+    def _fake_watermark_pdf(
+        source: Path,
+        output_path: Path,
+        *,
+        text: str,
+        angle: float,
+        font_size: float,
+        spacing: int,
+        opacity: float,
+        font_family: str,
+        warnings: list[str],
+    ) -> dict:
+        assert source.name == "deck.pdf"
+        assert output_path.suffix == ".pdf"
+        assert text == "内部资料"
+        output_path.write_bytes(b"%PDF-1.4\nwatermarked")
+        return {"format": "pdf", "pages_processed": 1, "font_used": "test", "font_source": "test", "font_path": None}
+
+    monkeypatch.setattr(watermark_module, "_convert_office_to_pdf", _fake_convert_office_to_pdf)
+    monkeypatch.setattr(watermark_module, "_watermark_pdf", _fake_watermark_pdf)
+
+    result = _json_result(watermark_file(input_path=str(input_path), watermark_text="内部资料"))
+
+    assert result["success"] is True
+    assert result["format"] == "office_pdf"
+    assert result["source_format"] == "pptx"
+    assert result["converted_format"] == "pdf"
+    assert Path(result["output_path"]).name == "deck.watermarked.pdf"
+    assert Path(result["output_path"]).exists()
+
+
+def test_office_watermark_output_path_must_be_pdf(tmp_path: Path) -> None:
+    input_path = tmp_path / "book.xlsx"
+    input_path.write_bytes(b"not a real xlsx")
+
+    result = _json_result(
+        watermark_file(
+            input_path=str(input_path),
+            watermark_text="内部资料",
+            output_path=str(tmp_path / "book.watermarked.xlsx"),
+        )
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "invalid_output_path"
+    assert "PDF" in result["error"]
+
+
 def test_tool_rejects_non_standard_style_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     input_path = tmp_path / "source.png"
     Image.new("RGB", (160, 120), "white").save(input_path)

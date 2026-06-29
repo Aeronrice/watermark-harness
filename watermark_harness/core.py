@@ -6,6 +6,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -17,7 +20,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 SUPPORTED_PDF_SUFFIXES = {".pdf"}
-SUPPORTED_SUFFIXES = SUPPORTED_IMAGE_SUFFIXES | SUPPORTED_PDF_SUFFIXES
+SUPPORTED_OFFICE_SUFFIXES = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+SUPPORTED_SUFFIXES = SUPPORTED_IMAGE_SUFFIXES | SUPPORTED_PDF_SUFFIXES | SUPPORTED_OFFICE_SUFFIXES
+OFFICE_OUTPUT_SUFFIX = ".pdf"
 DEFAULT_ANGLE = 45.0
 DEFAULT_FONT_SIZE = 13.0
 DEFAULT_FONT_FAMILY = "Microsoft YaHei"
@@ -358,7 +363,7 @@ def _contains_sensitive_part(path: Path) -> bool:
 
 def _validate_input(path: Path) -> Optional[str]:
     if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-        return "Unsupported file type. Supported types: PDF, PNG, JPG, JPEG."
+        return "Unsupported file type. Supported types: PDF, PNG, JPG, JPEG, Word, Excel, PPT."
     if _contains_sensitive_part(path):
         return "Refusing to process files in credential or sensitive configuration paths."
     try:
@@ -373,6 +378,8 @@ def _validate_input(path: Path) -> Optional[str]:
 
 
 def _default_output_path(input_path: Path) -> Path:
+    if input_path.suffix.lower() in SUPPORTED_OFFICE_SUFFIXES:
+        return input_path.with_name(f"{input_path.stem}.watermarked{OFFICE_OUTPUT_SUFFIX}")
     return input_path.with_name(f"{input_path.stem}.watermarked{input_path.suffix}")
 
 
@@ -389,10 +396,11 @@ def _with_unique_suffix(path: Path) -> Path:
 
 def _resolve_output_path(input_path: Path, output_value: Any) -> Tuple[Optional[Path], List[str], Optional[str]]:
     warnings: List[str] = []
+    output_suffix = OFFICE_OUTPUT_SUFFIX if input_path.suffix.lower() in SUPPORTED_OFFICE_SUFFIXES else input_path.suffix
     if isinstance(output_value, str) and output_value.strip():
         raw = Path(output_value).expanduser()
         if raw.suffix == "":
-            raw = raw.with_suffix(input_path.suffix)
+            raw = raw.with_suffix(output_suffix)
         try:
             parent = raw.parent.resolve(strict=True)
         except FileNotFoundError:
@@ -405,7 +413,9 @@ def _resolve_output_path(input_path: Path, output_value: Any) -> Tuple[Optional[
 
     if output == input_path:
         return None, warnings, "Output path must be different from input_path."
-    if output.suffix.lower() != input_path.suffix.lower():
+    if output.suffix.lower() != output_suffix.lower():
+        if input_path.suffix.lower() in SUPPORTED_OFFICE_SUFFIXES:
+            return None, warnings, "Office watermark outputs must be PDF files."
         return None, warnings, "Output file extension must match the input file extension."
     if _contains_sensitive_part(output):
         return None, warnings, "Refusing to write output into credential or sensitive configuration paths."
@@ -579,6 +589,78 @@ def _watermark_pdf(input_path: Path, output_path: Path, *, text: str, angle: flo
     }
 
 
+def _find_office_converter() -> Optional[str]:
+    for name in ("soffice", "libreoffice"):
+        path = shutil.which(name)
+        if path:
+            return path
+    for candidate in (
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/opt/homebrew/bin/soffice",
+        "/usr/local/bin/soffice",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _convert_office_to_pdf(input_path: Path, output_dir: Path) -> Path:
+    converter = _find_office_converter()
+    if not converter:
+        raise RuntimeError("Office watermarking requires LibreOffice/soffice for PDF conversion.")
+
+    proc = subprocess.run(
+        [
+            converter,
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(output_dir),
+            str(input_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"Office to PDF conversion failed: {detail[:240] or 'unknown error'}")
+
+    expected = output_dir / f"{input_path.stem}.pdf"
+    if expected.exists():
+        return expected
+
+    candidates = sorted(output_dir.glob("*.pdf"))
+    if candidates:
+        return candidates[0]
+    raise RuntimeError("Office to PDF conversion completed but did not produce a PDF.")
+
+
+def _watermark_office(input_path: Path, output_path: Path, *, text: str, angle: float, font_size: float, spacing: int, opacity: float, font_family: str, warnings: List[str]) -> Dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="watermark-office-") as temp_dir:
+        converted_pdf = _convert_office_to_pdf(input_path, Path(temp_dir))
+        details = _watermark_pdf(
+            converted_pdf,
+            output_path,
+            text=text,
+            angle=angle,
+            font_size=font_size,
+            spacing=spacing,
+            opacity=opacity,
+            font_family=font_family,
+            warnings=warnings,
+        )
+
+    return {
+        **details,
+        "format": "office_pdf",
+        "source_format": input_path.suffix.lower().lstrip("."),
+        "converted_format": "pdf",
+    }
+
+
 def _text_image(text: str, font: ImageFont.ImageFont, *, opacity: float) -> Image.Image:
     probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
@@ -696,6 +778,18 @@ def watermark_file(
     try:
         if source.suffix.lower() in SUPPORTED_PDF_SUFFIXES:
             details = _watermark_pdf(
+                source,
+                target,
+                text=text,
+                angle=angle_value,
+                font_size=font_size_value,
+                spacing=spacing_value,
+                opacity=opacity_value,
+                font_family=font_family_value,
+                warnings=warnings,
+            )
+        elif source.suffix.lower() in SUPPORTED_OFFICE_SUFFIXES:
+            details = _watermark_office(
                 source,
                 target,
                 text=text,

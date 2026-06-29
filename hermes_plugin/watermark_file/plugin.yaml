@@ -1,6 +1,6 @@
 name: watermark-file
-version: 1.0.1
-description: "Agent tool for applying locked-standard repeated diagonal watermarks to local PDF and image files without overwriting originals."
+version: 1.0.2
+description: "Agent tool for applying locked-standard repeated diagonal watermarks to local PDF, image, Word, Excel, and PPT files without overwriting originals. Office inputs are converted to watermarked PDF output."
 author: local
 kind: standalone
 provides_tools:
