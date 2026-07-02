@@ -14,7 +14,8 @@ WATERMARK_FILE_SCHEMA: Dict[str, Any] = {
         "Word, Excel, or PPT file. Office inputs are converted to watermarked "
         "PDF output. Creates a new output file and never overwrites the input. "
         "The watermark style is locked to the standard: 45 degree angle, "
-        "13 pt Microsoft YaHei preferred font, 0.2 opacity, 200 pt/px spacing. "
+        "19.5 pt Microsoft YaHei preferred font with image-size scaling for scans, "
+        "0.2 opacity, 200 pt/px spacing. "
         "At call time, provide only the file, watermark text, and optional output path."
     ),
     "parameters": {

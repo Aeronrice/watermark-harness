@@ -11,10 +11,12 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from xml.etree import ElementTree as ET
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -23,16 +25,22 @@ SUPPORTED_PDF_SUFFIXES = {".pdf"}
 SUPPORTED_OFFICE_SUFFIXES = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
 SUPPORTED_SUFFIXES = SUPPORTED_IMAGE_SUFFIXES | SUPPORTED_PDF_SUFFIXES | SUPPORTED_OFFICE_SUFFIXES
 OFFICE_OUTPUT_SUFFIX = ".pdf"
+XLSX_WORKSHEET_PREFIX = "xl/worksheets/"
+XLSX_SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLSX_SPREADSHEET_TAG = f"{{{XLSX_SPREADSHEET_NS}}}"
 DEFAULT_ANGLE = 45.0
-DEFAULT_FONT_SIZE = 13.0
+DEFAULT_FONT_SIZE = 19.5
 DEFAULT_FONT_FAMILY = "Microsoft YaHei"
 DEFAULT_SPACING = 200
 DEFAULT_OPACITY = 0.2
+IMAGE_STANDARD_FONT_SHORT_SIDE_RATIO = 0.024
+IMAGE_STANDARD_MAX_FONT_PX = 140
+IMAGE_STANDARD_SPACING_FONT_RATIO = 8.0
 MAX_INPUT_BYTES = 100 * 1024 * 1024
 STYLE_LOCKED_ERROR = (
     "Watermark style is locked to the configured standard. Omit style "
     "parameters; the tool applies the standard automatically: 45 degree "
-    "angle, 13 pt Microsoft YaHei font, 200 pt/px spacing, and 0.2 opacity."
+    "angle, 19.5 pt Microsoft YaHei font, 200 pt/px spacing, and 0.2 opacity."
 )
 LOCKED_STANDARD = {
     "angle": DEFAULT_ANGLE,
@@ -69,6 +77,8 @@ STYLE_OVERRIDE_TERMS = (
     "更大",
     "更密",
 )
+
+ET.register_namespace("", XLSX_SPREADSHEET_NS)
 
 SENSITIVE_PARTS = {
     ".1password",
@@ -604,6 +614,116 @@ def _find_office_converter() -> Optional[str]:
     return None
 
 
+def _xlsx_worksheet_names(archive: zipfile.ZipFile) -> List[str]:
+    return [
+        name
+        for name in archive.namelist()
+        if name.startswith(XLSX_WORKSHEET_PREFIX)
+        and name.endswith(".xml")
+        and "/_rels/" not in name
+    ]
+
+
+def _find_xlsx_child(parent: ET.Element, local_name: str) -> Optional[ET.Element]:
+    return parent.find(f"{XLSX_SPREADSHEET_TAG}{local_name}")
+
+
+def _ensure_xlsx_child(parent: ET.Element, local_name: str, *, index: Optional[int] = None) -> ET.Element:
+    existing = _find_xlsx_child(parent, local_name)
+    if existing is not None:
+        return existing
+    child = ET.Element(f"{XLSX_SPREADSHEET_TAG}{local_name}")
+    if index is None:
+        parent.append(child)
+    else:
+        parent.insert(index, child)
+    return child
+
+
+def _insert_xlsx_page_setup(root: ET.Element) -> ET.Element:
+    existing = _find_xlsx_child(root, "pageSetup")
+    if existing is not None:
+        return existing
+
+    page_setup = ET.Element(f"{XLSX_SPREADSHEET_TAG}pageSetup")
+    after_names = ("pageMargins", "printOptions", "sheetData")
+    insert_index: Optional[int] = None
+    for index, child in enumerate(root):
+        if any(child.tag == f"{XLSX_SPREADSHEET_TAG}{name}" for name in after_names):
+            insert_index = index + 1
+    if insert_index is None:
+        root.append(page_setup)
+    else:
+        root.insert(insert_index, page_setup)
+    return page_setup
+
+
+def _normalize_xlsx_sheet_page_setup(sheet_xml: bytes) -> Tuple[bytes, bool]:
+    root = ET.fromstring(sheet_xml)
+    sheet_pr = _ensure_xlsx_child(root, "sheetPr", index=0)
+    page_setup = _insert_xlsx_page_setup(root)
+
+    has_explicit_fit = "fitToWidth" in page_setup.attrib or "fitToHeight" in page_setup.attrib
+    has_explicit_scale = "scale" in page_setup.attrib
+    changed = False
+
+    if has_explicit_fit:
+        page_setup_pr = _ensure_xlsx_child(sheet_pr, "pageSetUpPr")
+        if page_setup_pr.get("fitToPage") != "1":
+            page_setup_pr.set("fitToPage", "1")
+            changed = True
+    elif not has_explicit_scale:
+        page_setup_pr = _ensure_xlsx_child(sheet_pr, "pageSetUpPr")
+        if page_setup_pr.get("fitToPage") != "1":
+            page_setup_pr.set("fitToPage", "1")
+            changed = True
+        if page_setup.get("fitToWidth") != "1":
+            page_setup.set("fitToWidth", "1")
+            changed = True
+        if page_setup.get("fitToHeight") != "1":
+            page_setup.set("fitToHeight", "1")
+            changed = True
+
+    if not changed:
+        return sheet_xml, False
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True), True
+
+
+def _prepare_xlsx_for_pdf_layout(input_path: Path, output_dir: Path, warnings: List[str]) -> Path:
+    prepared_path = output_dir / f"{input_path.stem}.layout.xlsx"
+    changed_sheets = 0
+    try:
+        with zipfile.ZipFile(input_path, "r") as source, zipfile.ZipFile(prepared_path, "w") as target:
+            worksheet_names = set(_xlsx_worksheet_names(source))
+            for item in source.infolist():
+                data = source.read(item.filename)
+                if item.filename in worksheet_names:
+                    data, changed = _normalize_xlsx_sheet_page_setup(data)
+                    if changed:
+                        changed_sheets += 1
+                target.writestr(item, data)
+    except (OSError, ET.ParseError, zipfile.BadZipFile) as exc:
+        warnings.append(f"Excel layout preflight skipped: {exc}")
+        return input_path
+
+    if changed_sheets:
+        warnings.append(
+            f"Excel PDF layout preflight normalized print scaling for {changed_sheets} worksheet(s) on a temporary copy."
+        )
+        return prepared_path
+    try:
+        prepared_path.unlink()
+    except OSError:
+        pass
+    return input_path
+
+
+def _prepare_office_input_for_pdf(input_path: Path, output_dir: Path, warnings: List[str]) -> Path:
+    if input_path.suffix.lower() == ".xlsx":
+        return _prepare_xlsx_for_pdf_layout(input_path, output_dir, warnings)
+    return input_path
+
+
 def _convert_office_to_pdf(input_path: Path, output_dir: Path) -> Path:
     converter = _find_office_converter()
     if not converter:
@@ -640,7 +760,9 @@ def _convert_office_to_pdf(input_path: Path, output_dir: Path) -> Path:
 
 def _watermark_office(input_path: Path, output_path: Path, *, text: str, angle: float, font_size: float, spacing: int, opacity: float, font_family: str, warnings: List[str]) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="watermark-office-") as temp_dir:
-        converted_pdf = _convert_office_to_pdf(input_path, Path(temp_dir))
+        temp_path = Path(temp_dir)
+        conversion_input = _prepare_office_input_for_pdf(input_path, temp_path, warnings)
+        converted_pdf = _convert_office_to_pdf(conversion_input, temp_path)
         details = _watermark_pdf(
             converted_pdf,
             output_path,
@@ -675,6 +797,26 @@ def _text_image(text: str, font: ImageFont.ImageFont, *, opacity: float) -> Imag
     return label
 
 
+def _image_font_px_from_points(font_size: float, dpi_x: float) -> int:
+    return max(1, int(round(font_size * max(dpi_x, 72.0) / 72.0)))
+
+
+def _effective_image_watermark_metrics(width: int, height: int, *, dpi_x: float, font_size: float, spacing: int) -> Tuple[int, int, int]:
+    base_font_px = _image_font_px_from_points(font_size, dpi_x)
+    font_px = base_font_px
+    step = max(1, spacing)
+    if not _float_changed(font_size, DEFAULT_FONT_SIZE):
+        short_side = max(1, min(width, height))
+        scaled_font_px = min(
+            IMAGE_STANDARD_MAX_FONT_PX,
+            max(base_font_px, int(round(short_side * IMAGE_STANDARD_FONT_SHORT_SIDE_RATIO))),
+        )
+        font_px = max(base_font_px, scaled_font_px)
+        if spacing == DEFAULT_SPACING:
+            step = max(step, int(round(font_px * IMAGE_STANDARD_SPACING_FONT_RATIO)))
+    return font_px, step, base_font_px
+
+
 def _watermark_image(input_path: Path, output_path: Path, *, text: str, angle: float, font_size: float, spacing: int, opacity: float, font_family: str, warnings: List[str]) -> Dict[str, Any]:
     with Image.open(input_path) as original:
         image_format = original.format or input_path.suffix.lstrip(".").upper()
@@ -683,13 +825,18 @@ def _watermark_image(input_path: Path, output_path: Path, *, text: str, angle: f
             dpi_x = float(dpi[0]) if isinstance(dpi, tuple) else 96.0
         except (TypeError, ValueError):
             dpi_x = 96.0
-        font_px = max(1, int(round(font_size * max(dpi_x, 72.0) / 72.0)))
+        font_px, step, base_font_px = _effective_image_watermark_metrics(
+            original.width,
+            original.height,
+            dpi_x=dpi_x,
+            font_size=font_size,
+            spacing=spacing,
+        )
         font, font_choice = _choose_pil_font(font_family, font_px, warnings)
         base = original.convert("RGBA")
         label = _text_image(text, font, opacity=opacity)
         rotated = label.rotate(angle, expand=True, resample=Image.Resampling.BICUBIC)
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
-        step = max(1, spacing)
         for y in range(-rotated.height, base.height + rotated.height, step):
             for x in range(-rotated.width, base.width + rotated.width, step):
                 overlay.alpha_composite(rotated, dest=(x, y))
@@ -711,7 +858,9 @@ def _watermark_image(input_path: Path, output_path: Path, *, text: str, angle: f
         "font_used": font_choice.name,
         "font_source": font_choice.source,
         "font_path": font_choice.path,
+        "image_base_font_px": base_font_px,
         "image_font_px": font_px,
+        "image_spacing_px": step,
     }
 
 

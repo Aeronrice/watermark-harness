@@ -16,10 +16,14 @@ Agent/model-facing calls may provide only:
 The visual style is intentionally locked in code:
 
 - angle: `45` degrees
-- font size: `13 pt`
+- font size: `19.5 pt`
 - preferred font: `Microsoft YaHei`
 - spacing: `200`
 - opacity: `0.2`
+
+For high-resolution scanned images, the image renderer keeps the public locked
+standard at `19.5 pt` but scales the actual raster font size and spacing from
+the image short side so watermarks remain visible on A4/letter-sized scans.
 
 Style parameters are not exposed in the tool schema. If a caller tries to pass style arguments to `watermark_file_tool`, the call is rejected with `watermark_style_locked`.
 
@@ -33,6 +37,10 @@ Supported inputs are fixed in code:
 
 Office inputs are converted locally to PDF first, then watermarked with the
 same PDF renderer. Office outputs are always `.pdf`.
+
+For `.xlsx` inputs, the harness may normalize print scaling on a temporary copy
+before LibreOffice conversion when worksheets do not already define explicit
+scaling. The source workbook is never mutated.
 
 ## Local preflight
 

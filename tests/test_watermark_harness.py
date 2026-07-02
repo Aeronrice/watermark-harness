@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import warnings
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 from PIL import Image, ImageChops
@@ -15,6 +17,11 @@ from watermark_harness.core import watermark_file, watermark_file_tool
 
 def _json_result(payload: str) -> dict:
     return json.loads(payload)
+
+
+def _write_minimal_xlsx(path: Path, worksheet_xml: str) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
 
 
 def test_image_watermark_creates_new_file_and_preserves_original(tmp_path: Path) -> None:
@@ -43,6 +50,25 @@ def test_image_watermark_creates_new_file_and_preserves_original(tmp_path: Path)
     with Image.open(input_path) as original, Image.open(output_path) as watermarked:
         assert watermarked.size == original.size
         assert ImageChops.difference(original.convert("RGB"), watermarked.convert("RGB")).getbbox() is not None
+
+
+def test_image_watermark_scales_for_high_resolution_scans(tmp_path: Path) -> None:
+    input_path = tmp_path / "scan.jpg"
+    Image.new("RGB", (2480, 3507), "white").save(input_path, dpi=(72, 72))
+
+    result = _json_result(
+        watermark_file(
+            input_path=str(input_path),
+            watermark_text="CVCapital内部",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["font_size"] == 19.5
+    assert result["image_base_font_px"] == 20
+    assert result["image_font_px"] == 60
+    assert result["image_spacing_px"] == 480
+    assert Path(result["output_path"]).exists()
 
 
 def test_output_path_must_not_overwrite_input(tmp_path: Path) -> None:
@@ -196,6 +222,49 @@ def test_office_watermark_output_path_must_be_pdf(tmp_path: Path) -> None:
     assert "PDF" in result["error"]
 
 
+def test_prepare_xlsx_for_pdf_layout_sets_fit_to_page_on_temp_copy(tmp_path: Path) -> None:
+    input_path = tmp_path / "book.xlsx"
+    worksheet_xml = (
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c></row></sheetData>"
+        "</worksheet>"
+    )
+    _write_minimal_xlsx(input_path, worksheet_xml)
+    original_bytes = input_path.read_bytes()
+    warnings_list: list[str] = []
+
+    prepared = watermark_module._prepare_xlsx_for_pdf_layout(input_path, tmp_path, warnings_list)
+
+    assert prepared != input_path
+    assert prepared.exists()
+    assert input_path.read_bytes() == original_bytes
+    assert "normalized print scaling" in "\n".join(warnings_list)
+
+    with zipfile.ZipFile(prepared, "r") as archive:
+        root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    assert root.find("x:sheetPr/x:pageSetUpPr", ns).get("fitToPage") == "1"
+    page_setup = root.find("x:pageSetup", ns)
+    assert page_setup.get("fitToWidth") == "1"
+    assert page_setup.get("fitToHeight") == "1"
+
+
+def test_prepare_xlsx_for_pdf_layout_preserves_explicit_scale(tmp_path: Path) -> None:
+    input_path = tmp_path / "book.xlsx"
+    worksheet_xml = (
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData/><pageSetup scale="85"/>'
+        "</worksheet>"
+    )
+    _write_minimal_xlsx(input_path, worksheet_xml)
+    warnings_list: list[str] = []
+
+    prepared = watermark_module._prepare_xlsx_for_pdf_layout(input_path, tmp_path, warnings_list)
+
+    assert prepared == input_path
+    assert warnings_list == []
+
+
 def test_tool_rejects_non_standard_style_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     input_path = tmp_path / "source.png"
     Image.new("RGB", (160, 120), "white").save(input_path)
@@ -222,7 +291,7 @@ def test_tool_rejects_non_standard_style_overrides(tmp_path: Path, monkeypatch: 
     assert result["code"] == "watermark_style_locked"
     assert result["locked_standard"] == {
         "angle": 45.0,
-        "font_size": 13.0,
+        "font_size": 19.5,
         "font_family": "Microsoft YaHei",
         "spacing": 200,
         "opacity": 0.2,
@@ -259,7 +328,7 @@ def test_tool_uses_locked_standard_without_exposing_style_args(tmp_path: Path, m
     assert result["success"] is True
     assert result["standard_locked"] is True
     assert result["angle"] == 45.0
-    assert result["font_size"] == 13.0
+    assert result["font_size"] == 19.5
     assert result["font_family"] == "Microsoft YaHei"
     assert result["spacing"] == 200
     assert result["opacity"] == 0.2
@@ -297,7 +366,7 @@ def test_tool_preflight_warns_but_keeps_locked_standard(tmp_path: Path, monkeypa
     )
 
     assert result["success"] is True
-    assert result["font_size"] == 13.0
+    assert result["font_size"] == 19.5
     assert result["spacing"] == 200
     assert result["opacity"] == 0.2
     assert result["preflight"]["status"] == "warning"
