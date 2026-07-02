@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watermark-harness"
-version = "0.1.0"
-description = "Locked-standard PDF/image watermark harness with local-only Ollama preflight."
+version = "0.1.2"
+description = "Locked-standard PDF/image/Office watermark harness with local-only Ollama preflight."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
